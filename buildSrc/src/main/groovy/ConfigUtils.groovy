@@ -3,10 +3,18 @@ import org.gradle.BuildResult
 import org.gradle.api.Project
 import org.gradle.api.ProjectEvaluationListener
 import org.gradle.api.ProjectState
+import org.gradle.api.Task
+import org.gradle.api.execution.TaskExecutionListener
 import org.gradle.api.initialization.Settings
 import org.gradle.api.invocation.Gradle
+import org.gradle.api.tasks.TaskState
+
+import java.text.SimpleDateFormat
 
 class ConfigUtils {
+    private List<TaskInfo> taskInfoList = []
+    private long startBuildMillis
+
     static addBuildListener(Gradle g) {
         g.addBuildListener(new BuildListener() {
             @Override
@@ -17,6 +25,7 @@ class ConfigUtils {
             @Override
             void settingsEvaluated(Settings settings) {
                 GLog.d("settingsEvaluated")
+                startBuildMillis = System.currentTimeMillis()
                 includeModule(settings)
             }
 
@@ -58,13 +67,47 @@ class ConfigUtils {
             @Override
             void projectsEvaluated(Gradle gradle) {
                 GLog.d("projectsEvaluated")
-
+                gradle.addListener(new TaskExecutionListener() {
+                    @Override
+                    void beforeExecute(Task task) {
+                        task.ext.startTime = System.currentTimeMillis()
+                    }
+                    @Override
+                    void afterExecute(Task task, TaskState state) {
+                        def exeDuration = System.currentTimeMillis() - task.ext.startTime
+                        if (exeDuration >= 100) {
+                            taskInfoList.add(new TaskInfo(task, exeDuration))
+                        }
+                    }
+                })
 
             }
 
             @Override
             void buildFinished(BuildResult buildResult) {
                 GLog.d("buildFinished")
+                if (!taskInfoList.isEmpty()) {
+                    Collections.sort(taskInfoList, new Comparator<TaskInfo>() {
+                        @Override
+                        int compare(TaskInfo t, TaskInfo t1) {
+                            return t1.exeDuration - t.exeDuration
+                        }
+                    })
+                    StringBuilder sb = new StringBuilder()
+                    int buildSec = (System.currentTimeMillis() - startBuildMillis) / 1000;
+                    int m = buildSec / 60;
+                    int s = buildSec % 60;
+                    def timeInfo = (m == 0 ? "${s}s" : "${m}m ${s}s (${buildSec}s)")
+                    sb.append("BUILD FINISHED in $timeInfo")
+                    taskInfoList.each {
+                        sb.append(String.format("%7sms %s\n", it.exeDuration, it.task.path))
+                    }
+                    def content = sb.toString()
+                    GLog.l(content)
+                    File file = new File(result.gradle.rootProject.buildDir.getAbsolutePath(),
+                            "build_time_records_" + new SimpleDateFormat("yyyy-MM-dd-HH-mm-ss").format(new Date()) + ".txt")
+                    FileUtils.write(file, content)
+                }
             }
         })
     }
